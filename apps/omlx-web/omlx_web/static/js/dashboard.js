@@ -2178,6 +2178,7 @@
                     max_tool_result_tokens: s.max_tool_result_tokens || null,
                     reasoning_parser: s.reasoning_parser || '',
                     ttl_seconds: s.ttl_seconds ?? null,
+                    exclusive_group: s.exclusive_group || '',
                     enableIndexCache: !!(s.index_cache_freq),
                     index_cache_freq: s.index_cache_freq || null,
                     turboquant_kv_enabled: s.turboquant_kv_enabled || false,
@@ -3187,6 +3188,7 @@
                                 force_sampling: this.modelSettings.force_sampling,
                                 reasoning_parser: this.modelSettings.reasoning_parser || null,
                                 ttl_seconds: this.modelSettings.ttl_seconds || null,
+                                exclusive_group: this.modelSettings.exclusive_group?.trim() || null,
                                 index_cache_freq: this.modelSettings.enableIndexCache
                                     ? (this.modelSettings.index_cache_freq || 4)
                                     : 0,
