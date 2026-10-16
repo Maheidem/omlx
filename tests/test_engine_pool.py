@@ -3227,6 +3227,10 @@ class TestExclusiveGroup:
     """exclusive_group: loading a model unloads idle same-group models and
     waits (bounded, 409 on timeout) for busy ones."""
 
+    # Wake-up tests set every fallback delay to 30 s or more, so only the
+    # notify can finish inside this limit. A normal wake takes milliseconds.
+    NOTIFY_WAKE_LIMIT_S = 5.0
+
     def _pool(self, small_mock_model_dir, monkeypatch, groups, ceiling=None):
         pool = _make_pool(ceiling=ceiling)
         pool.discover_models(str(small_mock_model_dir))
@@ -3550,7 +3554,7 @@ class TestExclusiveGroup:
     ):
         groups = {"model-a": "g", "model-b": "g"}
         pool = self._pool(small_mock_model_dir, monkeypatch, groups)
-        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_BUSY_GRACE_S", 1.0)
+        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_BUSY_GRACE_S", 60.0)
 
         async def a_request():
             try:
@@ -3565,7 +3569,9 @@ class TestExclusiveGroup:
             a_tasks: list[asyncio.Task] = []
 
             async def traffic():
-                for _ in range(30):
+                # Nominal 30 s of overlapping A traffic. A starved B can only
+                # load after it ends, and wait_for below gives up at 10 s.
+                for _ in range(600):
                     a_tasks.append(asyncio.create_task(a_request()))
                     await asyncio.sleep(0.05)
 
@@ -3574,15 +3580,14 @@ class TestExclusiveGroup:
             task_b = asyncio.create_task(pool.get_engine("model-b"))
             await asyncio.sleep(0.15)
             await pool.release_engine("model-a")
-            started = time.monotonic()
             try:
-                engine = await asyncio.wait_for(task_b, timeout=3.0)
-                elapsed = time.monotonic() - started
+                engine = await asyncio.wait_for(task_b, timeout=10.0)
+                traffic_running = not gen.done()
             finally:
                 await self._stop(gen)
                 await asyncio.gather(*a_tasks, return_exceptions=True)
         assert engine is not None
-        assert elapsed < 1.0
+        assert traffic_running  # B got in while A traffic was still arriving
         assert pool.is_abort_requested("model-a") is False
 
     @pytest.mark.asyncio
@@ -3728,10 +3733,11 @@ class TestExclusiveGroup:
     ):
         groups = {"model-a": "g", "model-b": "g"}
         pool = self._pool(small_mock_model_dir, monkeypatch, groups)
-        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_BUSY_GRACE_S", 10.0)
-        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_INITIAL_DELAY_S", 5.0)
-        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_MAX_DELAY_S", 5.0)
-        # Only a notify can wake the head in time: the poll fallback is 30 s.
+        # Only a notify can wake the head in time: every fallback (grace,
+        # retry delay, poll) is 30 s or more, the limit is NOTIFY_WAKE_LIMIT_S.
+        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_BUSY_GRACE_S", 60.0)
+        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_INITIAL_DELAY_S", 30.0)
+        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_MAX_DELAY_S", 30.0)
         monkeypatch.setattr("omlx.engine_pool._GROUP_WAIT_POLL_S", 30.0)
         with self._engines():
             await pool.get_engine("model-a", _lease=True)
@@ -3744,7 +3750,7 @@ class TestExclusiveGroup:
                 elapsed = time.monotonic() - released
             finally:
                 await self._stop(task_b)
-        assert elapsed < 0.5
+        assert elapsed < self.NOTIFY_WAKE_LIMIT_S
 
     @pytest.mark.asyncio
     async def test_shutdown_wakes_group_waiters(
@@ -3752,10 +3758,11 @@ class TestExclusiveGroup:
     ):
         groups = {"model-a": "g", "model-b": "g"}
         pool = self._pool(small_mock_model_dir, monkeypatch, groups)
-        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_BUSY_GRACE_S", 10.0)
-        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_INITIAL_DELAY_S", 5.0)
-        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_MAX_DELAY_S", 5.0)
-        # Only a notify can wake the head in time: the poll fallback is 30 s.
+        # Only a notify can wake the head in time: every fallback (grace,
+        # retry delay, poll) is 30 s or more, the limit is NOTIFY_WAKE_LIMIT_S.
+        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_BUSY_GRACE_S", 60.0)
+        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_INITIAL_DELAY_S", 30.0)
+        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_MAX_DELAY_S", 30.0)
         monkeypatch.setattr("omlx.engine_pool._GROUP_WAIT_POLL_S", 30.0)
         with self._engines():
             await pool.get_engine("model-a", _lease=True)
@@ -3775,7 +3782,7 @@ class TestExclusiveGroup:
             finally:
                 await self._stop(task_b, task_a2)
         assert all(isinstance(r, ModelUnavailableError) for r in results)
-        assert elapsed < 0.5
+        assert elapsed < self.NOTIFY_WAKE_LIMIT_S
         assert pool._group_queues == {}
         assert all(e.drain_ticket is None for e in pool._entries.values())
 
@@ -3833,10 +3840,11 @@ class TestExclusiveGroup:
     ):
         groups = {"model-a": "g", "model-b": "g"}
         pool = self._pool(small_mock_model_dir, monkeypatch, groups)
-        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_BUSY_GRACE_S", 10.0)
-        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_INITIAL_DELAY_S", 5.0)
-        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_MAX_DELAY_S", 5.0)
-        # Only a notify can wake the head in time: the poll fallback is 30 s.
+        # Only a notify can wake the head in time: every fallback (grace,
+        # retry delay, poll) is 30 s or more, the limit is NOTIFY_WAKE_LIMIT_S.
+        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_BUSY_GRACE_S", 60.0)
+        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_INITIAL_DELAY_S", 30.0)
+        monkeypatch.setattr("omlx.engine_pool._ADMISSION_RETRY_MAX_DELAY_S", 30.0)
         monkeypatch.setattr("omlx.engine_pool._GROUP_WAIT_POLL_S", 30.0)
         with self._engines():
             await pool.get_engine("model-a", _lease=True)
@@ -3852,7 +3860,7 @@ class TestExclusiveGroup:
                 elapsed = time.monotonic() - released
             finally:
                 await self._stop(task_b)
-        assert elapsed < 0.5
+        assert elapsed < self.NOTIFY_WAKE_LIMIT_S
         assert pool._entries["model-a"].drain_ticket is None
         assert pool._entries["model-a"].engine is None
 
