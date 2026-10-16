@@ -6632,6 +6632,7 @@ def _build_active_models_data() -> dict:
             },
             "total_active_requests": 0,
             "total_waiting_requests": 0,
+            "swap_waiting": 0,
         }
 
     now = time.monotonic()
@@ -6651,6 +6652,9 @@ def _build_active_models_data() -> dict:
     models = []
     total_active = 0
     total_waiting = 0
+    # Requests parked in admission have no engine yet, so no per-model
+    # scheduler queue counts them.
+    swap_waiting = status.get("swap_waiting", 0)
 
     for model_info in status.get("models", []):
         if not model_info.get("loaded") and not model_info.get("is_loading"):
@@ -6974,7 +6978,8 @@ def _build_active_models_data() -> dict:
             ),
         },
         "total_active_requests": total_active,
-        "total_waiting_requests": total_waiting,
+        "total_waiting_requests": total_waiting + swap_waiting,
+        "swap_waiting": swap_waiting,
     }
 
 
